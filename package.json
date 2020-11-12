@@ -1,0 +1,23 @@
+{
+  "name": "proxy",
+  "version": "1.0.0",
+  "description": "Simple Node.js Proxy Server",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IC-Tech/proxy.git"
+  },
+  "keywords": [
+    "proxy",
+    "proxy-server"
+  ],
+  "author": "Imesh Chamara <imesh1chamara@gmail.com> (http://ic-tech.now.sh/)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/IC-Tech/proxy/issues"
+  },
+  "homepage": "https://github.com/IC-Tech/proxy#readme"
+}
