@@ -186,7 +186,7 @@ proxy.on('connection', sock => {
 				].join('\r\n'))
 				sock.write('\r\n\r\n')
 			}
-			else res.write(data)
+			else res.write(data.toString().replace(/(\w+ )([^ ]*?)( HTTP)/i, (a,b,c,d) => b + url.parse(c).path + d))
 			res.pipe(sock, {end: false})
 			sock.pipe(res, {end: false})
 		})
