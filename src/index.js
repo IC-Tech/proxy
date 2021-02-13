@@ -127,8 +127,10 @@ proxy.on('connection', sock => {
 	sock.once('data', data => {
 		var req = (data.length < 1024 ? data : data.slice(0, 1024)).toString()
 		var a = req.substr(0, req.indexOf('\r')), tls = 0
-		if((tls = a.startsWith('CONNECT '))) a = url.parse('http://' + a.substr(8, a.indexOf(' ', 9)))
-		else if(req.indexOf('Host: ') >= 0) a = url.parse(a.split(' ')[1])
+		if((tls = a.startsWith('CONNECT '))) a = a.split(' ')[1]
+		else if((a = req.indexOf('Host: ')) >= 0) a = (a = req.substr(a)).substr(0, a.indexOf('\r')).split(' ')[1]
+		else a = 0
+		if(a !== 0) a = url.parse((a.match(/[\w]*:\/\//) ? '' : 'http://') + a)
 		if(a && a.hostname && !a.port) a.port = a.protocol == 'https:' ? 443 : 80
 		if(!a || !a.hostname || !a.port) {
 			log('CLIENT INVALID', id, adr)
