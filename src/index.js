@@ -92,6 +92,92 @@ proxy.on('close', () => {
 	log('PROXY CLOSED')
 })
 
+
+const write = (sock, a) => {
+	if(typeof a == 'undefined') {
+		a = sock
+		sock = 0
+	}
+	a = Buffer.concat(a.map(a => a instanceof Buffer ? a : Buffer.from(typeof a == 'number' ? [a] : a)))
+	if(sock) sock.write(a)
+	return a
+}
+const parse_socks = async (sock, data) => {
+	if(data[0] != 5) return [0, forceEnd(sock)]
+	var a = data.slice(2, data[1] + 2)
+	//if(auth) {
+	//	if(a.some(a => a == 2)) {
+	//		sock.socks5_auth = 1
+	//		sock.write(Buffer.from([5, 2]))
+	//	}
+	//	else return forceEnd(sock, Buffer.from([5, 255]))
+	//}
+	//else 
+	write(sock, [5, 0])
+	return new Promise(_ => sock.once('data', data => _((_ =>{
+		if(data[0] != 5 || data.length < 8) return [0, forceEnd(sock)]
+		var a = {cmd: data[1], atyp: data[3]}
+		if(
+			data[2] != 0 ||
+			//![1,2,3].some(b => a.cmd == b) ||
+			a.cmd != 1 ||
+			![1,3,4].some(b => a.atyp == b)
+		) return [0, forceEnd(sock)]
+		if(a.atyp == 1) a.adrl = [4, 8]
+		else if(a.atyp == 3) a.adrl = [4, data[4] + 5]
+		else if(a.atyp == 4) a.adrl = [4, 20]
+		a.adr = data.slice(...a.adrl)
+		a.prt = data.slice(a.adrl[1], a.adrl[1] + 2)
+		a.port = 0
+		for (var i = 0; i < a.prt.length; i++) a.port |= (a.prt[i] << (8 * (a.prt.length - i - 1)))
+		if(a.atyp == 1) a.addr = Array.from(a.adr).map(a => a.toString()).join('.')
+		else if(a.atyp == 4) {
+			a.addr = []
+			a._ = Array.from(a.adr).map(a => a.toString(16).padStart(2, '0'))
+			for (var i = 0; i < a._.length; i+=2) a.addr.push(a._[i] + a._[i + 1])
+			a.addr = a.addr.join(':')
+		}
+		else a.addr = a.adr.slice(1).toString()
+		sock.socks5 = 1
+		sock.a = a
+		return [1, {
+			sock,
+			a: {hostname: a.addr, port: a.port},
+			con: sock => write(sock, [5, 0, 0, sock.a.atyp, sock.a.adr, sock.a.prt])
+		}]
+	})())))
+}
+const parse_http = async (sock, data) => {
+	var req = (data.length < 1024 ? data : data.slice(0, 1024)).toString()
+	var a = req.substr(0, req.indexOf('\r')), tls = 0
+	if((tls = a.startsWith('CONNECT '))) a = a.split(' ')[1]
+	else if((a = req.indexOf('Host: ')) >= 0) a = (a = req.substr(a)).substr(0, a.indexOf('\r')).split(' ')[1]
+	else a = 0
+	if(a !== 0) a = url.parse((a.match(/[\w]*:\/\//) ? '' : 'http://') + a)
+	if(a && a.hostname && !a.port) a.port = a.protocol == 'https:' ? 443 : 80
+	if(!a || !a.hostname || !a.port) {
+		log('CLIENT INVALID', id, adr)
+		return [0, forceEnd(sock, httpErr(400))]
+	}
+	sock.a = a
+	sock.tls = tls
+	return [1, {
+		sock,
+		a,
+		tls,
+		con: (sock, res, data) => {
+			if(sock, tls) {
+				sock.write([
+					'HTTP/1.1 200 Connection Established',
+					'Proxy-agent: IC-Tech Proxy/1.0',
+				].join('\r\n'))
+				sock.write('\r\n\r\n')
+			}
+			else res.write(data.toString().replace(/(\w+ )([^ ]*?)( HTTP)/i, (a,b,c,d) => b + url.parse(c).path + d))
+		}
+	}]
+}
+
 proxy.on('connection', sock => {
 	var adr = sock.remoteAddress + ':' + sock.remotePort
 	const id = stats.totalconnections++
@@ -124,18 +210,11 @@ proxy.on('connection', sock => {
 		if(sock && sock.readyState != 'closed') forceEnd(sock)
 	})
 
-	sock.once('data', data => {
-		var req = (data.length < 1024 ? data : data.slice(0, 1024)).toString()
-		var a = req.substr(0, req.indexOf('\r')), tls = 0
-		if((tls = a.startsWith('CONNECT '))) a = a.split(' ')[1]
-		else if((a = req.indexOf('Host: ')) >= 0) a = (a = req.substr(a)).substr(0, a.indexOf('\r')).split(' ')[1]
-		else a = 0
-		if(a !== 0) a = url.parse((a.match(/[\w]*:\/\//) ? '' : 'http://') + a)
-		if(a && a.hostname && !a.port) a.port = a.protocol == 'https:' ? 443 : 80
-		if(!a || !a.hostname || !a.port) {
-			log('CLIENT INVALID', id, adr)
-			return forceEnd(sock, httpErr(400))
-		}
+	sock.once('data', async data => {
+		var b = await (data[0] <= 5 ? parse_socks(sock, data) : parse_http(sock, data))
+		if(b[0] == 0) return
+		var a = (b = b[1]).a, tls = b.tls
+		sock = b.sock
 
 		res = net.connect(a.port, a.hostname)
 		name = a.hostname + ':' + a.port
@@ -147,8 +226,8 @@ proxy.on('connection', sock => {
 				res.calc = 0
 			}
 			var eok, erep
-			if(eok = erep = (e.code == 'ENOTFOUND' || e.code == 'ETIMEDOUT' || e.code == 'EAI_AGAIN')) forceEnd(sock, httpErr(404))
-			if(eok = erep = (e.code == 'ENETUNREACH' || e.code == 'ECONNABORTED' || e.code == 'ECONNREFUSED')) forceEnd(sock, httpErr(400))
+			if(eok = erep = ['ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN'].some(a => e.code == a)) forceEnd(sock, sock.socks5 ? (!sock.connected && write([5, 4, 0, sock.a.atyp, sock.a.adr, sock.a.prt])) : httpErr(404))
+			if(eok = erep = ['ENETUNREACH', 'ECONNABORTED', 'ECONNREFUSED'].some(a => e.code == a)) forceEnd(sock, sock.socks5 ? (!sock.connected && write([5, 5, 0, sock.a.atyp, sock.a.adr, sock.a.prt])) : httpErr(400))
 			if(eok = (e.code == 'ECONNRESET' || e.code == 'EPIPE')) forceEnd(sock)
 
 			if(res && res.readyState != 'closed') forceEnd(res)
@@ -157,18 +236,19 @@ proxy.on('connection', sock => {
 				log('SERVER ERROR', id, adr, '=>', name)
 				error(e)
 			}
-			if(!eok && sock && sock.readyState != 'closed') forceEnd(sock, httpErr(500))
+			if(!eok && sock && sock.readyState != 'closed') forceEnd(sock, !sock.socks5 && httpErr(500))
 		})
 
 		res.on('connect', () => {
 			log(`CONNECT ${tls && 'TLS ' || ''}SERVER`, id, adr, '=>', name)
 			if(res.remotePort == PORT && res.remoteAddress == res.localAddress) {
 				log(`CLOSE ECHO`, id, adr, '=>', name)
-				forceEnd(sock, httpErr(400))
-				forceEnd(res)
+				forceEnd(sock, sock.socks5 ? write([5, 2, 0, sock.a.atyp, sock.a.adr, sock.a.prt]) : httpErr(400))
+				return forceEnd(res)
 			}
 
 			res.calc = 1
+			sock.connected = 1
 
 			res.on('end', e => {
 				if(res.calc) {
@@ -181,14 +261,7 @@ proxy.on('connection', sock => {
 				if(res && res.readyState != 'closed') forceEnd(res)
 			})
 
-			if(tls) {
-				sock.write([
-					'HTTP/1.1 200 Connection Established',
-					'Proxy-agent: IC-Tech Proxy/1.0',
-				].join('\r\n'))
-				sock.write('\r\n\r\n')
-			}
-			else res.write(data.toString().replace(/(\w+ )([^ ]*?)( HTTP)/i, (a,b,c,d) => b + url.parse(c).path + d))
+			if(b.con) b.con(sock, res, data)
 			res.pipe(sock, {end: false})
 			sock.pipe(res, {end: false})
 		})
